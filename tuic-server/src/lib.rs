@@ -48,6 +48,29 @@ pub async fn run(cfg: Config) -> eyre::Result<()> {
 		cfg,
 	});
 	let server = server::Server::init(ctx.clone()).await?;
+
+	#[cfg(unix)]
+	{
+		use tracing::{info, warn};
+		if let Some(user) = &ctx.cfg.user {
+			info!("Dropping privileges to user: {}", user);
+			let mut pd = privdrop::PrivDrop::default();
+			pd = pd.user(user);
+			if let Some(group) = &ctx.cfg.group {
+				pd = pd.group(group);
+			}
+			pd.apply().map_err(|e| eyre::eyre!("Failed to drop privileges: {}", e))?;
+			warn!("Privileges dropped successfully");
+		} else if let Some(group) = &ctx.cfg.group {
+			info!("Dropping privileges to group: {}", group);
+			privdrop::PrivDrop::default()
+				.group(group)
+				.apply()
+				.map_err(|e| eyre::eyre!("Failed to drop privileges: {}", e))?;
+			warn!("Privileges dropped successfully");
+		}
+	}
+
 	server.start().await;
 	Ok(())
 }

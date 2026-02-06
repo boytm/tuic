@@ -84,6 +84,11 @@ pub struct Config {
 	pub users:     HashMap<Uuid, String>,
 	pub tls:       TlsConfig,
 
+	#[educe(Default = None)]
+	pub user:  Option<String>,
+	#[educe(Default = None)]
+	pub group: Option<String>,
+
 	#[educe(Default = "")]
 	pub data_dir: PathBuf,
 
@@ -694,23 +699,50 @@ pub async fn parse_config(cli: Cli, env_state: EnvState) -> eyre::Result<Config>
 
 	// Determine certificate and key paths
 	let base_dir = config.data_dir.clone();
-	config.tls.certificate = if config.tls.auto_ssl && config.tls.certificate.to_str() == Some("") {
-		config.data_dir.join(format!("{}.cer.pem", config.tls.hostname))
-	} else if config.tls.certificate.is_relative() {
-		config.data_dir.join(&config.tls.certificate)
-	} else {
-		config.tls.certificate.clone()
-	};
 
-	config.tls.private_key = if config.tls.auto_ssl && config.tls.private_key.to_str() == Some("") {
-		config.data_dir.join(format!("{}.key.pem", config.tls.hostname))
-	} else if config.tls.private_key.is_relative() {
-		base_dir.join(&config.tls.private_key)
-	} else {
-		config.tls.private_key.clone()
-	};
+	config.tls.certificate = resolve_path(
+		config.tls.certificate,
+		&base_dir,
+		if config.tls.auto_ssl {
+			Some(format!("{}.cer.pem", config.tls.hostname))
+		} else {
+			None
+		},
+	)?;
+
+	config.tls.private_key = resolve_path(
+		config.tls.private_key,
+		&base_dir,
+		if config.tls.auto_ssl {
+			Some(format!("{}.key.pem", config.tls.hostname))
+		} else {
+			None
+		},
+	)?;
 
 	Ok(config)
+}
+
+fn resolve_path(path: PathBuf, base_dir: &PathBuf, default_name: Option<String>) -> eyre::Result<PathBuf> {
+	if let Some(path_str) = path.to_str() {
+		if let Some(credential_name) = path_str.strip_prefix("systemd:") {
+			let credentials_dir = std::env::var("CREDENTIALS_DIRECTORY")
+				.map_err(|_| eyre::eyre!("systemd: prefix used but CREDENTIALS_DIRECTORY environment variable is not set"))?;
+			return Ok(std::path::Path::new(&credentials_dir).join(credential_name));
+		}
+	}
+
+	if path.to_str() == Some("") {
+		if let Some(name) = default_name {
+			return Ok(base_dir.join(name));
+		}
+	}
+
+	if path.is_relative() {
+		Ok(base_dir.join(path))
+	} else {
+		Ok(path)
+	}
 }
 
 #[cfg(test)]
@@ -1587,5 +1619,38 @@ mod tests {
 
 		// Should succeed because inference will detect TOML
 		assert!(result.is_ok());
+	}
+
+	#[test]
+	fn test_resolve_path_systemd_credential() {
+		let base_dir = PathBuf::from("/data");
+
+		// Test with CREDENTIALS_DIRECTORY set
+		unsafe { std::env::set_var("CREDENTIALS_DIRECTORY", "/run/credentials/tuic.service") };
+		let path = PathBuf::from("systemd:cert");
+		let resolved = resolve_path(path, &base_dir, None).unwrap();
+		assert_eq!(resolved, PathBuf::from("/run/credentials/tuic.service/cert"));
+
+		// Test without CREDENTIALS_DIRECTORY set
+		unsafe { std::env::remove_var("CREDENTIALS_DIRECTORY") };
+		let path = PathBuf::from("systemd:cert");
+		let result = resolve_path(path, &base_dir, None);
+		assert!(result.is_err());
+		assert!(result.unwrap_err().to_string().contains("CREDENTIALS_DIRECTORY"));
+
+		// Test normal relative path
+		let path = PathBuf::from("certs/cert.pem");
+		let resolved = resolve_path(path, &base_dir, None).unwrap();
+		assert_eq!(resolved, PathBuf::from("/data/certs/cert.pem"));
+
+		// Test absolute path
+		let path = PathBuf::from("/etc/cert.pem");
+		let resolved = resolve_path(path, &base_dir, None).unwrap();
+		assert_eq!(resolved, PathBuf::from("/etc/cert.pem"));
+
+		// Test default name
+		let path = PathBuf::from("");
+		let resolved = resolve_path(path, &base_dir, Some("default.pem".to_string())).unwrap();
+		assert_eq!(resolved, PathBuf::from("/data/default.pem"));
 	}
 }

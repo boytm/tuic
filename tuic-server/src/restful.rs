@@ -22,9 +22,15 @@ use uuid::Uuid;
 
 use crate::AppContext;
 
-pub async fn start(ctx: Arc<AppContext>) {
+pub async fn bind(ctx: Arc<AppContext>) -> eyre::Result<tokio::net::TcpListener> {
 	let restful = ctx.cfg.restful.as_ref().unwrap();
 	let addr = restful.addr;
+	let listener = tokio::net::TcpListener::bind(addr).await?;
+	Ok(listener)
+}
+
+pub async fn start(ctx: Arc<AppContext>, listener: tokio::net::TcpListener) {
+	let addr = listener.local_addr().unwrap();
 	let app = Router::new()
 		.route("/kick", post(kick))
 		.route("/online", get(list_online))
@@ -32,7 +38,6 @@ pub async fn start(ctx: Arc<AppContext>) {
 		.route("/traffic", get(list_traffic))
 		.route("/reset_traffic", get(reset_traffic))
 		.with_state(ctx);
-	let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
 	warn!("RESTful server started, listening on {addr}");
 	axum::serve(listener, app).await.unwrap();
 }

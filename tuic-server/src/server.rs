@@ -26,8 +26,9 @@ use crate::{
 };
 
 pub struct Server {
-	ep:  Endpoint,
-	ctx: Arc<AppContext>,
+	ep:               Endpoint,
+	ctx:              Arc<AppContext>,
+	restful_listener: Option<tokio::net::TcpListener>,
 }
 
 impl Server {
@@ -180,13 +181,23 @@ impl Server {
 
 		let ep = Endpoint::new(EndpointConfig::default(), Some(config), socket, Arc::new(TokioRuntime))?;
 
-		Ok(Self { ep, ctx })
+		let restful_listener = if ctx.cfg.restful.is_some() {
+			Some(crate::restful::bind(ctx.clone()).await?)
+		} else {
+			None
+		};
+
+		Ok(Self {
+			ep,
+			ctx,
+			restful_listener,
+		})
 	}
 
-	pub async fn start(&self) {
+	pub async fn start(self) {
 		warn!("server started, listening on {}", self.ep.local_addr().unwrap());
-		if self.ctx.cfg.restful.is_some() {
-			tokio::spawn(crate::restful::start(self.ctx.clone()));
+		if let Some(listener) = self.restful_listener {
+			tokio::spawn(crate::restful::start(self.ctx.clone(), listener));
 		}
 
 		loop {
