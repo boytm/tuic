@@ -1,4 +1,3 @@
-#![feature(ip)]
 
 use std::{process, str::FromStr};
 
